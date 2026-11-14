@@ -78,6 +78,75 @@ public sealed class LinuxProcSocketScannerTests : IDisposable
         connection.Direction.Should().Be(SocketFlowDirection.Listening);
     }
 
+    [Fact]
+    public async Task ScanSocketsAsync_WhenTcpLocalPortMatchesBoundUdpPort_ResolvesTcpFlowAsOutbound()
+    {
+        // Arrange: UDP bound on 0.0.0.0:50000 and a TCP connection from 192.168.1.20:50000 to 192.168.1.10:443
+        WriteTable("udp", Line("00000000:C350", "00000000:0000", "07", 5001));
+        WriteTable("tcp", Line("1401A8C0:C350", "0A01A8C0:01BB", "01", 5002));
+        var scanner = new LinuxProcSocketScanner(new StubProcessInspector(), _procRoot);
+
+        // Act
+        var connections = await scanner.ScanSocketsAsync(CancellationToken.None);
+
+        // Assert
+        connections.Single(c => c.Protocol == SocketTransportProtocol.Tcp)
+            .Direction.Should().Be(SocketFlowDirection.Outbound);
+    }
+
+    [Fact]
+    public async Task ScanSocketsAsync_WhenTcpPortIsOnlyHeldByClosedSocket_ResolvesTcpFlowAsOutbound()
+    {
+        // Arrange: a closed TCP socket (07) and a TCP connection on the same local port 50001 to 192.168.1.10:443
+        WriteTable(
+            "tcp",
+            Line("1401A8C0:C351", "0A01A8C0:01BB", "07", 5003),
+            Line("1401A8C0:C351", "0A01A8C0:01BB", "01", 5004));
+        var scanner = new LinuxProcSocketScanner(new StubProcessInspector(), _procRoot);
+
+        // Act
+        var connections = await scanner.ScanSocketsAsync(CancellationToken.None);
+
+        // Assert
+        connections.Single(c => c.State == "Established")
+            .Direction.Should().Be(SocketFlowDirection.Outbound);
+    }
+
+    [Fact]
+    public async Task ScanSocketsAsync_WhenConnectedUdpLocalPortMatchesTcpListener_ResolvesUdpFlowAsOutbound()
+    {
+        // Arrange: TCP listening on port 50002 and a connected UDP socket from port 50002 to 192.168.1.1:53
+        WriteTable("tcp", Line("00000000:C352", "00000000:0000", "0A", 5005));
+        WriteTable("udp", Line("1401A8C0:C352", "0101A8C0:0035", "01", 5006));
+        var scanner = new LinuxProcSocketScanner(new StubProcessInspector(), _procRoot);
+
+        // Act
+        var connections = await scanner.ScanSocketsAsync(CancellationToken.None);
+
+        // Assert
+        connections.Single(c => c.Protocol == SocketTransportProtocol.Udp)
+            .Direction.Should().Be(SocketFlowDirection.Outbound);
+    }
+
+    [Fact]
+    public async Task ScanSocketsAsync_WhenConnectedUdpLocalPortIsBoundUnconnected_ResolvesUdpFlowAsInbound()
+    {
+        // Arrange: UDP service bound on 0.0.0.0:5353 and a connected UDP socket on 5353 talking to 192.168.1.30:1900,
+        // a pair that the port heuristics alone would classify as outbound
+        WriteTable(
+            "udp",
+            Line("00000000:14E9", "00000000:0000", "07", 5007),
+            Line("1401A8C0:14E9", "1E01A8C0:076C", "01", 5008));
+        var scanner = new LinuxProcSocketScanner(new StubProcessInspector(), _procRoot);
+
+        // Act
+        var connections = await scanner.ScanSocketsAsync(CancellationToken.None);
+
+        // Assert
+        connections.Single(c => c.RemoteEndpoint.Port == 1900)
+            .Direction.Should().Be(SocketFlowDirection.Inbound);
+    }
+
     private static string Line(string local, string remote, string state, int inode) =>
         $"   0: {local} {remote} {state}" + string.Format(CultureInfo.InvariantCulture, LineTail, inode);
 

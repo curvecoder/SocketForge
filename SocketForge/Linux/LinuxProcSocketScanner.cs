@@ -15,6 +15,12 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
     private readonly IProcessInspector _processInspector = processInspector ?? throw new ArgumentNullException(nameof(processInspector));
     private readonly string _procRoot = string.IsNullOrWhiteSpace(procRoot) ? "/proc" : procRoot;
 
+    // TCP_LISTEN. A TCP socket in TCP_CLOSE (07) is not accepting connections and must not mark its port as a service.
+    private const string TcpListenState = "0A";
+
+    // The kernel reports an unconnected UDP socket, the only kind that receives from any peer, in state 07.
+    private const string UdpUnconnectedState = "07";
+
     /// <inheritdoc />
     public async Task<IReadOnlyList<ActiveSocketConnection>> ScanSocketsAsync(CancellationToken cancellationToken = default)
     {
@@ -41,32 +47,34 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
             ? await File.ReadAllLinesAsync(udp6Path, cancellationToken).ConfigureAwait(false)
             : [];
 
-        var listeningPorts = CollectListeningPorts(tcpLines, tcp6Lines, udpLines, udp6Lines);
+        // Each protocol has its own port space: a UDP socket bound on a port says nothing about a TCP flow using it.
+        var tcpListeningPorts = CollectListeningPorts(TcpListenState, tcpLines, tcp6Lines);
+        var udpListeningPorts = CollectListeningPorts(UdpUnconnectedState, udpLines, udp6Lines);
 
         if (tcpLines.Length > 0)
         {
-            await ParseProcNetLinesAsync(tcpLines, SocketTransportProtocol.Tcp, inodeToPid, listeningPorts, records, cancellationToken).ConfigureAwait(false);
+            await ParseProcNetLinesAsync(tcpLines, SocketTransportProtocol.Tcp, inodeToPid, tcpListeningPorts, records, cancellationToken).ConfigureAwait(false);
         }
 
         if (tcp6Lines.Length > 0)
         {
-            await ParseProcNetLinesAsync(tcp6Lines, SocketTransportProtocol.Tcp, inodeToPid, listeningPorts, records, cancellationToken).ConfigureAwait(false);
+            await ParseProcNetLinesAsync(tcp6Lines, SocketTransportProtocol.Tcp, inodeToPid, tcpListeningPorts, records, cancellationToken).ConfigureAwait(false);
         }
 
         if (udpLines.Length > 0)
         {
-            await ParseProcNetLinesAsync(udpLines, SocketTransportProtocol.Udp, inodeToPid, listeningPorts, records, cancellationToken).ConfigureAwait(false);
+            await ParseProcNetLinesAsync(udpLines, SocketTransportProtocol.Udp, inodeToPid, udpListeningPorts, records, cancellationToken).ConfigureAwait(false);
         }
 
         if (udp6Lines.Length > 0)
         {
-            await ParseProcNetLinesAsync(udp6Lines, SocketTransportProtocol.Udp, inodeToPid, listeningPorts, records, cancellationToken).ConfigureAwait(false);
+            await ParseProcNetLinesAsync(udp6Lines, SocketTransportProtocol.Udp, inodeToPid, udpListeningPorts, records, cancellationToken).ConfigureAwait(false);
         }
 
         return records;
     }
 
-    private static HashSet<int> CollectListeningPorts(params string[][] lineSets)
+    private static HashSet<int> CollectListeningPorts(string listenState, params string[][] lineSets)
     {
         var listeningPorts = new HashSet<int>();
         foreach (var lines in lineSets)
@@ -86,8 +94,7 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
                 }
 
                 var stateHex = parts[3];
-                if (string.Equals(stateHex, "0A", StringComparison.OrdinalIgnoreCase) ||
-                    string.Equals(stateHex, "07", StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(stateHex, listenState, StringComparison.OrdinalIgnoreCase))
                 {
                     var localEp = ParseEndpoint(parts[1]);
                     if (localEp.Port > 0)
@@ -132,7 +139,7 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
             _ = inodeToPid.TryGetValue(inode, out var pid);
             var process = await _processInspector.ResolveProcessAsync(pid, cancellationToken).ConfigureAwait(false);
 
-            var isListening = string.Equals(stateHex, "0A", StringComparison.OrdinalIgnoreCase) ||
+            var isListening = string.Equals(stateHex, TcpListenState, StringComparison.OrdinalIgnoreCase) ||
                               remoteEp.Port == 0 ||
                               remoteEp.Address.Equals(IPAddress.Any) ||
                               remoteEp.Address.Equals(IPAddress.IPv6Any);
