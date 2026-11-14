@@ -17,8 +17,9 @@ SocketForge est le framework partagé .NET d'**observation, d'énumération et d
 ## 🚀 Capacités Clés
 
 * **Zéro Npcap** :
-  * Windows : inspection via l'API Win32 IP Helper (`iphlpapi.dll` : `GetExtendedTcpTable`, `GetExtendedUdpTable`).
-  * Linux : inspection via le pseudo-système `/proc/net/tcp`, `/proc/net/udp` et corrélation des inodes de sockets dans `/proc/<pid>/fd`.
+  * Windows : inspection via l'API Win32 IP Helper (`iphlpapi.dll` : `GetExtendedTcpTable`, `GetExtendedUdpTable`), pour les sockets IPv4 (`AF_INET`) et IPv6 (`AF_INET6`) ; les adresses IPv6 de lien local gardent leur identifiant de portée (`fe80::1%12`). Une table qui grossit entre l'appel de taille et l'appel de lecture est relue avec la nouvelle taille ; toute autre erreur de l'API lève `Win32Exception` au lieu de rendre un balayage vide.
+  * Linux : inspection via le pseudo-système `/proc/net/tcp`, `/proc/net/tcp6`, `/proc/net/udp`, `/proc/net/udp6` et corrélation des inodes de sockets dans `/proc/<pid>/fd`.
+  * Les pairs IPv4 des sockets double pile (`::ffff:a.b.c.d`) sont rendus en adresses IPv4 sur les deux plateformes : un hôte garde une seule adresse.
 * **Résolution de direction de flux (`SocketFlowDirectionResolver`)** :
   * Détection précise et cohérente des directions `Listening`, `Inbound` et `Outbound` sur Windows et Linux.
   * Indexation des sockets d'écoute locale (`LISTEN` / `0A` / State 2) pour qualifier formellement les connexions entrantes vers un service hébergé (SSH, HTTP, bases de données, etc.).

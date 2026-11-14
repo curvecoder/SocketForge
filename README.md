@@ -14,7 +14,7 @@ Cross-platform active TCP and UDP socket scanner for .NET, inspecting listening 
 ## Key Capabilities
 
 * **Native Kernel Inspections**:
-  * **Windows**: Uses Win32 IP Helper API (`GetExtendedTcpTable`, `GetExtendedUdpTable`) for fast, non-blocking socket enumeration.
+  * **Windows**: Uses Win32 IP Helper API (`GetExtendedTcpTable`, `GetExtendedUdpTable`) for fast, non-blocking enumeration of IPv4 and IPv6 sockets.
   * **Linux**: Parses kernel virtual filesystem entries (`/proc/net/tcp`, `/proc/net/tcp6`, `/proc/net/udp`, `/proc/net/udp6`).
 * **Process Attribution**: Binds local network endpoints to the specific process ID (PID) and process metadata responsible for network communication.
 * **Full Socket State Coverage**:

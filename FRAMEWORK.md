@@ -17,8 +17,9 @@ SocketForge is a cross-platform .NET system engineering library dedicated to **o
 ## 🚀 Key Capabilities
 
 * **Zero Npcap Dependency**:
-  * Windows: Native inspection via Win32 IP Helper API (`iphlpapi.dll`: `GetExtendedTcpTable`, `GetExtendedUdpTable`).
-  * Linux: Direct kernel inspection via `/proc/net/tcp`, `/proc/net/udp` and inode correlation across `/proc/<pid>/fd`.
+  * Windows: Native inspection via Win32 IP Helper API (`iphlpapi.dll`: `GetExtendedTcpTable`, `GetExtendedUdpTable`), for both IPv4 (`AF_INET`) and IPv6 (`AF_INET6`) sockets; link-local IPv6 addresses keep their scope id (`fe80::1%12`). A table that grows between the size call and the read call is read again with the new size; any other API error raises `Win32Exception` instead of an empty scan.
+  * Linux: Direct kernel inspection via `/proc/net/tcp`, `/proc/net/tcp6`, `/proc/net/udp`, `/proc/net/udp6` and inode correlation across `/proc/<pid>/fd`.
+  * IPv4 peers of dual-stack sockets (`::ffff:a.b.c.d`) are reported as IPv4 addresses on both platforms, so a host keeps a single address.
 * **Flow Direction Resolution (`SocketFlowDirectionResolver`)**:
   * Accurate and deterministic classification of `Listening`, `Inbound`, and `Outbound` states across both Windows and Linux.
   * Local listener indexing (`LISTEN` / `0A` / State 2) to formally identify inbound connections destined for hosted services (SSH, HTTP, databases, etc.).

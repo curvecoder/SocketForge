@@ -1,4 +1,3 @@
-using System.Buffers.Binary;
 using System.Net;
 using System.Runtime.InteropServices;
 using ProcessForge.Contracts;
@@ -16,6 +15,8 @@ public sealed class WindowsSocketScanner(IProcessInspector processInspector) : I
     private readonly IProcessInspector _processInspector = processInspector ?? throw new ArgumentNullException(nameof(processInspector));
 
     private const int AfInet = 2;
+    private const int AfInet6 = 23;
+    private const uint ListenState = 2;
     private const int TcpTableOwnerPidAll = 5;
     private const int UdpTableOwnerPid = 1;
 
@@ -42,52 +43,42 @@ public sealed class WindowsSocketScanner(IProcessInspector processInspector) : I
     {
         var records = new List<ActiveSocketConnection>();
 
-        var tcpRows = ReadNativeTcpTable();
+        // IP Helper keeps one table per address family; the two reads are separate snapshots, so a socket opened between
+        // them may be missing from this cycle and is picked up by the next one.
+        var tcpRows = ReadTcpRows(AfInet).Concat(ReadTcpRows(AfInet6)).ToList();
         var listeningPorts = new HashSet<int>();
-        for (var i = 0; i < tcpRows.Count; i++)
+        foreach (var row in tcpRows)
         {
-            var row = tcpRows[i];
-            if (row.State == 2 || ConvertPort(row.RemotePort) == 0)
+            if (row.State == ListenState || row.Remote.Port == 0)
             {
-                listeningPorts.Add(ConvertPort(row.LocalPort));
+                listeningPorts.Add(row.Local.Port);
             }
         }
 
-        for (var i = 0; i < tcpRows.Count; i++)
+        foreach (var row in tcpRows)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var row = tcpRows[i];
             var process = await _processInspector.ResolveProcessAsync(row.OwningPid, cancellationToken).ConfigureAwait(false);
-
-            var localEp = new SocketEndpoint(new IPAddress(row.LocalAddr), ConvertPort(row.LocalPort));
-            var remoteEp = new SocketEndpoint(new IPAddress(row.RemoteAddr), ConvertPort(row.RemotePort));
-
-            var direction = DetermineDirection(localEp, remoteEp, row.State, listeningPorts);
 
             records.Add(new ActiveSocketConnection(
                 Protocol: SocketTransportProtocol.Tcp,
-                Direction: direction,
-                LocalEndpoint: localEp,
-                RemoteEndpoint: remoteEp,
+                Direction: DetermineDirection(row.Local, row.Remote, row.State, listeningPorts),
+                LocalEndpoint: row.Local,
+                RemoteEndpoint: row.Remote,
                 State: MapTcpState(row.State),
                 Process: process));
         }
 
-        var udpRows = ReadNativeUdpTable();
-        for (var i = 0; i < udpRows.Count; i++)
+        foreach (var row in ReadUdpRows(AfInet).Concat(ReadUdpRows(AfInet6)))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var row = udpRows[i];
             var process = await _processInspector.ResolveProcessAsync(row.OwningPid, cancellationToken).ConfigureAwait(false);
-
-            var localEp = new SocketEndpoint(new IPAddress(row.LocalAddr), ConvertPort(row.LocalPort));
-            var remoteEp = new SocketEndpoint(IPAddress.Any, 0);
 
             records.Add(new ActiveSocketConnection(
                 Protocol: SocketTransportProtocol.Udp,
                 Direction: SocketFlowDirection.Listening,
-                LocalEndpoint: localEp,
-                RemoteEndpoint: remoteEp,
+                LocalEndpoint: row.Local,
+                RemoteEndpoint: row.Remote,
                 State: "UDP",
                 Process: process));
         }
@@ -101,16 +92,11 @@ public sealed class WindowsSocketScanner(IProcessInspector processInspector) : I
         uint state,
         IReadOnlySet<int>? listeningPorts)
     {
-        return SocketFlowDirectionResolver.Resolve(local, remote, isListeningState: state == 2, listeningPorts);
+        return SocketFlowDirectionResolver.Resolve(local, remote, isListeningState: state == ListenState, listeningPorts);
     }
 
     internal static SocketFlowDirection DetermineDirection(SocketEndpoint local, SocketEndpoint remote, uint state) =>
         DetermineDirection(local, remote, state, listeningPorts: null);
-
-    private static int ConvertPort(uint port)
-    {
-        return (int)(((port & 0xFF) << 8) | ((port >> 8) & 0xFF));
-    }
 
     internal static string MapTcpState(uint state)
     {
@@ -132,57 +118,19 @@ public sealed class WindowsSocketScanner(IProcessInspector processInspector) : I
         };
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private readonly struct MibTcpRowOwnerPid
-    {
-        public readonly uint State;
-        public readonly uint LocalAddr;
-        public readonly uint LocalPort;
-        public readonly uint RemoteAddr;
-        public readonly uint RemotePort;
-        public readonly int OwningPid;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private readonly struct MibUdpRowOwnerPid
-    {
-        public readonly uint LocalAddr;
-        public readonly uint LocalPort;
-        public readonly int OwningPid;
-    }
-
-    private static List<MibTcpRowOwnerPid> ReadNativeTcpTable()
+    private static IReadOnlyList<NativeSocketRow> ReadTcpRows(int addressFamily)
     {
         var table = ExtendedTableReader.Read(
-            (IntPtr buffer, ref int size) => GetExtendedTcpTable(buffer, ref size, true, AfInet, TcpTableOwnerPidAll, 0),
+            (IntPtr buffer, ref int size) => GetExtendedTcpTable(buffer, ref size, true, addressFamily, TcpTableOwnerPidAll, 0),
             nameof(GetExtendedTcpTable));
-        return ReadRows<MibTcpRowOwnerPid>(table);
+        return addressFamily == AfInet6 ? ExtendedTableRowParser.ParseTcp6(table) : ExtendedTableRowParser.ParseTcp4(table);
     }
 
-    private static List<MibUdpRowOwnerPid> ReadNativeUdpTable()
+    private static IReadOnlyList<NativeSocketRow> ReadUdpRows(int addressFamily)
     {
         var table = ExtendedTableReader.Read(
-            (IntPtr buffer, ref int size) => GetExtendedUdpTable(buffer, ref size, true, AfInet, UdpTableOwnerPid, 0),
+            (IntPtr buffer, ref int size) => GetExtendedUdpTable(buffer, ref size, true, addressFamily, UdpTableOwnerPid, 0),
             nameof(GetExtendedUdpTable));
-        return ReadRows<MibUdpRowOwnerPid>(table);
-    }
-
-    private static List<TRow> ReadRows<TRow>(byte[] table)
-        where TRow : struct
-    {
-        var list = new List<TRow>();
-        if (table.Length < sizeof(int))
-        {
-            return list;
-        }
-
-        var rowSize = Marshal.SizeOf<TRow>();
-        var numEntries = Math.Min(BinaryPrimitives.ReadInt32LittleEndian(table), (table.Length - sizeof(int)) / rowSize);
-        for (var i = 0; i < numEntries; i++)
-        {
-            list.Add(MemoryMarshal.Read<TRow>(table.AsSpan(sizeof(int) + (i * rowSize), rowSize)));
-        }
-
-        return list;
+        return addressFamily == AfInet6 ? ExtendedTableRowParser.ParseUdp6(table) : ExtendedTableRowParser.ParseUdp4(table);
     }
 }
