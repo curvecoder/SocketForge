@@ -29,6 +29,8 @@ SocketForge est le framework partagé .NET d'**observation, d'énumération et d
 * **Typage fort & Clé d'unicité logique** :
   * Modélisation immuable (`ActiveSocketConnection`, `SocketEndpoint`, `SocketTransportProtocol`, `SocketFlowDirection`).
   * Clé de dédoublonnage canonique préservant l'identité applicative des flux sortants indépendamment des ports locaux éphémères.
+  * La partie propriétaire de la clé est l'exécutable cible, sinon le chemin de l'exécutable, sinon le nom du processus (depuis 2.0.0) : les processus dont le chemin est illisible ne sont plus fusionnés en un seul flux. Rupture de compatibilité : les clés des flux dont le chemin était vide diffèrent de celles écrites par 1.x.
+* **Les sockets TIME_WAIT sans propriétaire ne sont pas rendus** (depuis 2.0.0) : un socket TCP (IPv4 ou IPv6) en TIME_WAIT détenu par le pid 0 sous Windows, ou d'inode 0 sous Linux, n'appartient plus à aucun processus et apparaîtrait sinon comme un second flux vers la même destination.
 
 ---
 

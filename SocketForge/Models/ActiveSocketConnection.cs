@@ -22,18 +22,32 @@ public sealed record ActiveSocketConnection(
     /// <summary>
     /// Computes the canonical key used to deduplicate this socket.
     /// </summary>
+    /// <remarks>
+    /// The owner part of the key is the target executable, else the executable path, else the process name.
+    /// </remarks>
+    /// <returns>A key that stays the same across client ephemeral ports of one logical flow.</returns>
     public string ComputeLogicalKey()
     {
-        var targetOrPath = string.IsNullOrWhiteSpace(Process.TargetExecutable)
-            ? Process.ExecutablePath
-            : Process.TargetExecutable;
+        var owner = ResolveOwner();
 
         return Direction switch
         {
-            SocketFlowDirection.Outbound => $"{Protocol}:{Direction}:{targetOrPath}:{RemoteEndpoint.Address}:{RemoteEndpoint.Port}",
-            SocketFlowDirection.Inbound => $"{Protocol}:{Direction}:{targetOrPath}:{LocalEndpoint.Port}:{RemoteEndpoint.Address}",
-            SocketFlowDirection.Listening => $"{Protocol}:{Direction}:{targetOrPath}:{LocalEndpoint.Port}",
-            _ => $"{Protocol}:{Direction}:{targetOrPath}:{LocalEndpoint}:{RemoteEndpoint}"
+            SocketFlowDirection.Outbound => $"{Protocol}:{Direction}:{owner}:{RemoteEndpoint.Address}:{RemoteEndpoint.Port}",
+            SocketFlowDirection.Inbound => $"{Protocol}:{Direction}:{owner}:{LocalEndpoint.Port}:{RemoteEndpoint.Address}",
+            SocketFlowDirection.Listening => $"{Protocol}:{Direction}:{owner}:{LocalEndpoint.Port}",
+            _ => $"{Protocol}:{Direction}:{owner}:{LocalEndpoint}:{RemoteEndpoint}"
         };
+    }
+
+    // The path is empty for a protected process read without elevation or a process that already exited; falling back
+    // to the name keeps such processes apart instead of merging every one of them into a single flow.
+    private string ResolveOwner()
+    {
+        if (!string.IsNullOrWhiteSpace(Process.TargetExecutable))
+        {
+            return Process.TargetExecutable;
+        }
+
+        return string.IsNullOrWhiteSpace(Process.ExecutablePath) ? Process.ProcessName : Process.ExecutablePath;
     }
 }

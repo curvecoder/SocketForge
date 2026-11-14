@@ -35,6 +35,27 @@ public sealed class WindowsSocketScannerTests
             c.LocalEndpoint == new SocketEndpoint(IPAddress.IPv6Loopback, port));
     }
 
+    [Theory]
+    [InlineData(11u, 0, true)]
+    [InlineData(11u, 4321, false)]
+    [InlineData(5u, 0, false)]
+    [InlineData(2u, 0, false)]
+    public void IsOwnerlessTimeWait_WhenStateAndOwnerVary_FlagsOnlyTimeWaitWithoutOwner(uint state, int owningPid, bool expected)
+    {
+        // Arrange: Windows hands TIME_WAIT sockets to pid 0 once their process has released them
+        var row = new NativeSocketRow(
+            new SocketEndpoint(IPAddress.Parse("192.168.1.20"), 50000),
+            new SocketEndpoint(IPAddress.Parse("192.168.1.10"), 443),
+            state,
+            owningPid);
+
+        // Act
+        var result = WindowsSocketScanner.IsOwnerlessTimeWait(row);
+
+        // Assert
+        result.Should().Be(expected);
+    }
+
     private sealed class StubProcessInspector : IProcessInspector
     {
         public Task<ProcessMetadata> ResolveProcessAsync(int processId, CancellationToken cancellationToken = default) =>

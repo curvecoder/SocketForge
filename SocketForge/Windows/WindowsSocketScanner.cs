@@ -17,6 +17,7 @@ public sealed class WindowsSocketScanner(IProcessInspector processInspector) : I
     private const int AfInet = 2;
     private const int AfInet6 = 23;
     private const uint ListenState = 2;
+    private const uint TimeWaitState = 11;
     private const int TcpTableOwnerPidAll = 5;
     private const int UdpTableOwnerPid = 1;
 
@@ -45,7 +46,7 @@ public sealed class WindowsSocketScanner(IProcessInspector processInspector) : I
 
         // IP Helper keeps one table per address family; the two reads are separate snapshots, so a socket opened between
         // them may be missing from this cycle and is picked up by the next one.
-        var tcpRows = ReadTcpRows(AfInet).Concat(ReadTcpRows(AfInet6)).ToList();
+        var tcpRows = ReadTcpRows(AfInet).Concat(ReadTcpRows(AfInet6)).Where(row => !IsOwnerlessTimeWait(row)).ToList();
         var listeningPorts = new HashSet<int>();
         foreach (var row in tcpRows)
         {
@@ -97,6 +98,10 @@ public sealed class WindowsSocketScanner(IProcessInspector processInspector) : I
 
     internal static SocketFlowDirection DetermineDirection(SocketEndpoint local, SocketEndpoint remote, uint state) =>
         DetermineDirection(local, remote, state, listeningPorts: null);
+
+    // Once a process closes a connection, Windows keeps the TIME_WAIT row for a few minutes under pid 0. It no longer
+    // belongs to any process and would show up as a second flow of the same destination owned by "System Idle".
+    internal static bool IsOwnerlessTimeWait(NativeSocketRow row) => row.State == TimeWaitState && row.OwningPid == 0;
 
     internal static string MapTcpState(uint state)
     {

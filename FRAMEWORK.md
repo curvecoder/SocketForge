@@ -29,6 +29,8 @@ SocketForge is a cross-platform .NET system engineering library dedicated to **o
 * **Strong Typing & Canonical Deduplication Keys**:
   * Immutable data models (`ActiveSocketConnection`, `SocketEndpoint`, `SocketTransportProtocol`, `SocketFlowDirection`).
   * Canonical deduplication keys preserving logical application flows independently of client ephemeral port variations.
+  * The owner part of the key is the target executable, else the executable path, else the process name (since 2.0.0), so processes whose path cannot be read are no longer merged into one flow. Breaking change: the keys of flows whose path was empty differ from the ones written by 1.x.
+* **Ownerless TIME_WAIT sockets are not reported** (since 2.0.0): a TCP socket (IPv4 or IPv6) in TIME_WAIT owned by pid 0 on Windows, or with inode 0 on Linux, no longer belongs to any process and would otherwise appear as a second flow of the same destination.
 
 ---
 

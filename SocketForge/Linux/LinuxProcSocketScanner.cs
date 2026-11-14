@@ -18,6 +18,10 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
     // TCP_LISTEN. A TCP socket in TCP_CLOSE (07) is not accepting connections and must not mark its port as a service.
     private const string TcpListenState = "0A";
 
+    private const string TcpTimeWaitState = "06";
+
+    private const string NoInode = "0";
+
     // The kernel reports an unconnected UDP socket, the only kind that receives from any peer, in state 07.
     private const string UdpUnconnectedState = "07";
 
@@ -137,6 +141,10 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
 
             var stateHex = parts[3];
             var inode = parts[9];
+            if (protocol == SocketTransportProtocol.Tcp && IsOwnerlessTimeWait(stateHex, inode))
+            {
+                continue;
+            }
 
             _ = inodeToPid.TryGetValue(inode, out var pid);
             var process = await _processInspector.ResolveProcessAsync(pid, cancellationToken).ConfigureAwait(false);
@@ -220,6 +228,13 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
         address = parsed.IsIPv4MappedToIPv6 ? parsed.MapToIPv4() : parsed;
         return true;
     }
+
+    // The kernel detaches a TIME_WAIT socket from its file once the process closed it, so it carries inode 0 and no
+    // owning process; reporting it would add a second flow of the same destination with an unknown owner. Other states
+    // that can also carry inode 0, such as an orphaned FIN_WAIT2, are still reported.
+    private static bool IsOwnerlessTimeWait(string stateHex, string inode) =>
+        string.Equals(stateHex, TcpTimeWaitState, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(inode, NoInode, StringComparison.Ordinal);
 
     private static string MapLinuxState(string stateHex)
     {

@@ -189,6 +189,46 @@ public sealed class LinuxProcSocketScannerTests : IDisposable
             .Which.Direction.Should().Be(SocketFlowDirection.Outbound);
     }
 
+    [Fact]
+    public async Task ScanSocketsAsync_WhenTimeWaitSocketHasNoInode_SkipsIt()
+    {
+        // Arrange
+        // The kernel detaches TIME_WAIT sockets from their file, so they carry inode 0 and no owning process.
+        WriteTable(
+            "tcp",
+            Line("1401A8C0:C354", "0A01A8C0:01BB", "06", 0),
+            Line("1401A8C0:C355", "0A01A8C0:01BB", "01", 7001));
+        var scanner = new LinuxProcSocketScanner(new StubProcessInspector(), _procRoot);
+
+        // Act
+        var connections = await scanner.ScanSocketsAsync(CancellationToken.None);
+
+        // Assert
+        connections.Should().ContainSingle()
+            .Which.State.Should().Be("Established");
+    }
+
+    [Theory]
+    [InlineData("tcp", "06", 7002, 1)]
+    [InlineData("tcp6", "06", 0, 0)]
+    [InlineData("udp", "06", 0, 1)]
+    [InlineData("tcp", "05", 0, 1)]
+    public async Task ScanSocketsAsync_WhenSocketIsNotAnOwnerlessTcpTimeWait_KeepsIt(string table, string state, int inode, int expectedCount)
+    {
+        // Arrange
+        // Only an IPv4 or IPv6 TCP socket in TIME_WAIT with inode 0 is dropped (expected count 0 for the tcp6 case).
+        var address = table.EndsWith('6') ? "0000000000000000FFFF00001401A8C0:C356" : "1401A8C0:C356";
+        var remote = table.EndsWith('6') ? "0000000000000000FFFF00000A01A8C0:01BB" : "0A01A8C0:01BB";
+        WriteTable(table, Line(address, remote, state, inode));
+        var scanner = new LinuxProcSocketScanner(new StubProcessInspector(), _procRoot);
+
+        // Act
+        var connections = await scanner.ScanSocketsAsync(CancellationToken.None);
+
+        // Assert
+        connections.Should().HaveCount(expectedCount);
+    }
+
     private static string Line(string local, string remote, string state, int inode) =>
         $"   0: {local} {remote} {state}" + string.Format(CultureInfo.InvariantCulture, LineTail, inode);
 
