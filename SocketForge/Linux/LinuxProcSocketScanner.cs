@@ -96,8 +96,7 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
                 var stateHex = parts[3];
                 if (string.Equals(stateHex, listenState, StringComparison.OrdinalIgnoreCase))
                 {
-                    var localEp = ParseEndpoint(parts[1]);
-                    if (localEp.Port > 0)
+                    if (TryParseEndpoint(parts[1], out var localEp) && localEp.Port > 0)
                     {
                         listeningPorts.Add(localEp.Port);
                     }
@@ -131,8 +130,11 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
                 continue;
             }
 
-            var localEp = ParseEndpoint(parts[1]);
-            var remoteEp = ParseEndpoint(parts[2]);
+            if (!TryParseEndpoint(parts[1], out var localEp) || !TryParseEndpoint(parts[2], out var remoteEp))
+            {
+                continue;
+            }
+
             var stateHex = parts[3];
             var inode = parts[9];
 
@@ -156,40 +158,67 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
         }
     }
 
-    private static SocketEndpoint ParseEndpoint(string hexEndpoint)
+    // The /proc/net format is kernel output, not a stable contract: a line with an undecodable port or address is skipped
+    // and the scan goes on with the next one. An endpoint without a colon, or an address that is neither 8 nor 32 hex
+    // digits, keeps its historical reading as 0.0.0.0 so that existing consumers see the same rows as before.
+    private static bool TryParseEndpoint(string hexEndpoint, out SocketEndpoint endpoint)
     {
+        endpoint = new SocketEndpoint(IPAddress.Any, 0);
         var tokens = hexEndpoint.Split(':');
         if (tokens.Length != 2)
         {
-            return new SocketEndpoint(IPAddress.Any, 0);
+            return true;
         }
 
-        var ipHex = tokens[0];
-        var port = int.Parse(tokens[1], NumberStyles.HexNumber, CultureInfo.InvariantCulture);
+        if (!int.TryParse(tokens[1], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var port) || port is < 0 or > 65535)
+        {
+            return false;
+        }
 
+        if (!TryParseHexAddress(tokens[0], out var address))
+        {
+            return false;
+        }
+
+        endpoint = new SocketEndpoint(address, port);
+        return true;
+    }
+
+    private static bool TryParseHexAddress(string ipHex, out IPAddress address)
+    {
+        address = IPAddress.Any;
         if (ipHex.Length == 8)
         {
-            var ipInt = uint.Parse(ipHex, NumberStyles.HexNumber, CultureInfo.InvariantCulture);
-            return new SocketEndpoint(new IPAddress(ipInt), port);
-        }
-
-        if (ipHex.Length == 32)
-        {
-            var bytes = new byte[16];
-            for (var i = 0; i < 4; i++)
+            if (!uint.TryParse(ipHex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var ipInt))
             {
-                var chunk = uint.Parse(ipHex.Substring(i * 8, 8), NumberStyles.HexNumber, CultureInfo.InvariantCulture);
-                var chunkBytes = BitConverter.GetBytes(chunk);
-                Array.Copy(chunkBytes, 0, bytes, i * 4, 4);
+                return false;
             }
 
-            // A dual-stack socket reports its IPv4 peers as ::ffff:a.b.c.d; mapping them back keeps one address per host
-            // whether the peer was reached through the IPv4 or the IPv6 table.
-            var address = new IPAddress(bytes);
-            return new SocketEndpoint(address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address, port);
+            address = new IPAddress(ipInt);
+            return true;
         }
 
-        return new SocketEndpoint(IPAddress.Any, port);
+        if (ipHex.Length != 32)
+        {
+            return true;
+        }
+
+        var bytes = new byte[16];
+        for (var i = 0; i < 4; i++)
+        {
+            if (!uint.TryParse(ipHex.AsSpan(i * 8, 8), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var chunk))
+            {
+                return false;
+            }
+
+            BitConverter.GetBytes(chunk).CopyTo(bytes, i * 4);
+        }
+
+        // A dual-stack socket reports its IPv4 peers as ::ffff:a.b.c.d; mapping them back keeps one address per host
+        // whether the peer was reached through the IPv4 or the IPv6 table.
+        var parsed = new IPAddress(bytes);
+        address = parsed.IsIPv4MappedToIPv6 ? parsed.MapToIPv4() : parsed;
+        return true;
     }
 
     private static string MapLinuxState(string stateHex)
@@ -255,17 +284,19 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
                 }
                 catch (IOException)
                 {
-                    // I/O read error
+                    // The process exited while its fd directory was listed. Its sockets not mapped yet keep pid 0; the
+                    // other processes are still mapped.
                 }
                 catch (UnauthorizedAccessException)
                 {
-                    // Droits insuffisants
+                    // Without root, the fd directories of other users' processes cannot be read. Their sockets are
+                    // still reported, with pid 0.
                 }
             }
         }
         catch (IOException)
         {
-            // /proc cannot be read as a whole
+            // /proc cannot be listed: the map stays empty and every socket is reported with pid 0.
         }
 
         return map;

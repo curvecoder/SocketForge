@@ -8,12 +8,12 @@ namespace SocketForge.Models;
 public enum SocketTransportProtocol
 {
     /// <summary>
-    /// Protocole TCP (Transmission Control Protocol).
+    /// TCP (Transmission Control Protocol).
     /// </summary>
     Tcp,
 
     /// <summary>
-    /// Protocole UDP (User Datagram Protocol).
+    /// UDP (User Datagram Protocol).
     /// </summary>
     Udp
 }
@@ -65,7 +65,7 @@ public readonly record struct SocketEndpoint
     }
 
     /// <summary>
-    /// Adresse IP.
+    /// IP address.
     /// </summary>
     public IPAddress Address { get; }
 

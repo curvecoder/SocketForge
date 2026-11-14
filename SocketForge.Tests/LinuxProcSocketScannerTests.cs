@@ -147,6 +147,48 @@ public sealed class LinuxProcSocketScannerTests : IDisposable
             .Direction.Should().Be(SocketFlowDirection.Inbound);
     }
 
+    [Theory]
+    [InlineData("0100007F:ZZZZ", "00000000:0000")]
+    [InlineData("ZZZZZZZZ:0050", "00000000:0000")]
+    [InlineData("0000000000000000ZZZZ00000100007F:0050", "00000000000000000000000000000000:0000")]
+    [InlineData("0100007F:0050", "0A01A8C0:FFFFFFFF")]
+    [InlineData("0100007F:0050", "0A01A8C0:10000")]
+    public async Task ScanSocketsAsync_WhenLineHasUnparseableEndpoint_SkipsOnlyThatLine(string local, string remote)
+    {
+        // Arrange
+        // One unexpected line followed by a valid listener on 192.168.1.20:22.
+        WriteTable("tcp", Line(local, remote, "01", 6001), Line("1401A8C0:0016", "00000000:0000", "0A", 6002));
+        var scanner = new LinuxProcSocketScanner(new StubProcessInspector(), _procRoot);
+
+        // Act
+        var act = () => scanner.ScanSocketsAsync(CancellationToken.None);
+
+        // Assert
+        var connections = (await act.Should().NotThrowAsync()).Subject;
+        connections.Should().ContainSingle()
+            .Which.LocalEndpoint.Should().Be(new SocketEndpoint(IPAddress.Parse("192.168.1.20"), 22));
+    }
+
+    [Fact]
+    public async Task ScanSocketsAsync_WhenListeningLineHasUnparseablePort_DoesNotCountItAsService()
+    {
+        // Arrange
+        // A malformed listener line on port "ZZZZ", then a TCP flow from 192.168.1.20:50003 to 192.168.1.10:443.
+        WriteTable(
+            "tcp",
+            Line("00000000:ZZZZ", "00000000:0000", "0A", 6003),
+            Line("1401A8C0:C353", "0A01A8C0:01BB", "01", 6004));
+        var scanner = new LinuxProcSocketScanner(new StubProcessInspector(), _procRoot);
+
+        // Act
+        var act = () => scanner.ScanSocketsAsync(CancellationToken.None);
+
+        // Assert
+        var connections = (await act.Should().NotThrowAsync()).Subject;
+        connections.Should().ContainSingle()
+            .Which.Direction.Should().Be(SocketFlowDirection.Outbound);
+    }
+
     private static string Line(string local, string remote, string state, int inode) =>
         $"   0: {local} {remote} {state}" + string.Format(CultureInfo.InvariantCulture, LineTail, inode);
 
