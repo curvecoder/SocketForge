@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Net;
 using System.Runtime.InteropServices;
 using ProcessForge.Contracts;
@@ -152,77 +153,34 @@ public sealed class WindowsSocketScanner(IProcessInspector processInspector) : I
 
     private static List<MibTcpRowOwnerPid> ReadNativeTcpTable()
     {
-        var list = new List<MibTcpRowOwnerPid>();
-        var size = 0;
-
-        _ = GetExtendedTcpTable(IntPtr.Zero, ref size, true, AfInet, TcpTableOwnerPidAll, 0);
-        if (size <= 0)
-        {
-            return list;
-        }
-
-        var buffer = Marshal.AllocHGlobal(size);
-        try
-        {
-            var ret = GetExtendedTcpTable(buffer, ref size, true, AfInet, TcpTableOwnerPidAll, 0);
-            if (ret != 0)
-            {
-                return list;
-            }
-
-            var numEntries = Marshal.ReadInt32(buffer);
-            var rowPtr = IntPtr.Add(buffer, 4);
-            var rowSize = Marshal.SizeOf<MibTcpRowOwnerPid>();
-
-            for (var i = 0; i < numEntries; i++)
-            {
-                var row = Marshal.PtrToStructure<MibTcpRowOwnerPid>(rowPtr);
-                list.Add(row);
-                rowPtr = IntPtr.Add(rowPtr, rowSize);
-            }
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(buffer);
-        }
-
-        return list;
+        var table = ExtendedTableReader.Read(
+            (IntPtr buffer, ref int size) => GetExtendedTcpTable(buffer, ref size, true, AfInet, TcpTableOwnerPidAll, 0),
+            nameof(GetExtendedTcpTable));
+        return ReadRows<MibTcpRowOwnerPid>(table);
     }
 
     private static List<MibUdpRowOwnerPid> ReadNativeUdpTable()
     {
-        var list = new List<MibUdpRowOwnerPid>();
-        var size = 0;
+        var table = ExtendedTableReader.Read(
+            (IntPtr buffer, ref int size) => GetExtendedUdpTable(buffer, ref size, true, AfInet, UdpTableOwnerPid, 0),
+            nameof(GetExtendedUdpTable));
+        return ReadRows<MibUdpRowOwnerPid>(table);
+    }
 
-        _ = GetExtendedUdpTable(IntPtr.Zero, ref size, true, AfInet, UdpTableOwnerPid, 0);
-        if (size <= 0)
+    private static List<TRow> ReadRows<TRow>(byte[] table)
+        where TRow : struct
+    {
+        var list = new List<TRow>();
+        if (table.Length < sizeof(int))
         {
             return list;
         }
 
-        var buffer = Marshal.AllocHGlobal(size);
-        try
+        var rowSize = Marshal.SizeOf<TRow>();
+        var numEntries = Math.Min(BinaryPrimitives.ReadInt32LittleEndian(table), (table.Length - sizeof(int)) / rowSize);
+        for (var i = 0; i < numEntries; i++)
         {
-            var ret = GetExtendedUdpTable(buffer, ref size, true, AfInet, UdpTableOwnerPid, 0);
-            if (ret != 0)
-            {
-                return list;
-            }
-
-            var numEntries = Marshal.ReadInt32(buffer);
-            var rowPtr = IntPtr.Add(buffer, 4);
-            var rowSize = Marshal.SizeOf<MibUdpRowOwnerPid>();
-
-            for (var i = 0; i < numEntries; i++)
-            {
-                var row = Marshal.PtrToStructure<MibUdpRowOwnerPid>(rowPtr);
-                list.Add(row);
-                rowPtr = IntPtr.Add(rowPtr, rowSize);
-            }
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(buffer);
+            list.Add(MemoryMarshal.Read<TRow>(table.AsSpan(sizeof(int) + (i * rowSize), rowSize)));
         }
 
         return list;

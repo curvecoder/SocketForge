@@ -12,5 +12,8 @@ public interface ISocketScanner
     /// </summary>
     /// <param name="cancellationToken">Cooperative cancellation token.</param>
     /// <returns>The observed network connections.</returns>
+    /// <exception cref="System.ComponentModel.Win32Exception">On Windows, the IP Helper API failed to return a socket table.</exception>
+    /// <exception cref="InvalidOperationException">On Windows, the socket table kept growing faster than it could be read.</exception>
+    /// <exception cref="OperationCanceledException">The scan was cancelled through <paramref name="cancellationToken"/>.</exception>
     Task<IReadOnlyList<ActiveSocketConnection>> ScanSocketsAsync(CancellationToken cancellationToken = default);
 }
