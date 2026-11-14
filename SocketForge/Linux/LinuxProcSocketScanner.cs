@@ -176,7 +176,10 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
                 Array.Copy(chunkBytes, 0, bytes, i * 4, 4);
             }
 
-            return new SocketEndpoint(new IPAddress(bytes), port);
+            // A dual-stack socket reports its IPv4 peers as ::ffff:a.b.c.d; mapping them back keeps one address per host
+            // whether the peer was reached through the IPv4 or the IPv6 table.
+            var address = new IPAddress(bytes);
+            return new SocketEndpoint(address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address, port);
         }
 
         return new SocketEndpoint(IPAddress.Any, port);
