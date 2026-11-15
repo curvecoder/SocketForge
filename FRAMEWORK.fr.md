@@ -26,6 +26,9 @@ SocketForge est le framework partagé .NET d'**observation, d'énumération et d
   * Heuristiques de repli fondées sur les plages dynamiques/éphémères (Linux `>= 32768`, IANA `>= 49152`) et privilégiées (`< 1024`).
 * **Corrélation Processus** :
   * Liaison directe de chaque socket active au processus propriétaire résolu via **`ProcessForge`**.
+  * Chaque scan résout une seule fois chaque PID distinct, quel que soit le nombre de sockets du processus (depuis 2.1.0, Windows et Linux).
+  * `SocketScannerFactory.Create()` (depuis 2.1.0) construit le scanner avec un `CachingProcessInspector` de ProcessForge autour d'un `CrossPlatformProcessInspector`, conservé pendant toute la vie du scanner : un processus déjà vu n'est pas relu aux scans suivants tant que son heure de démarrage ne change pas. Garder un seul scanner tant que l'on scanne.
+  * `SocketScannerFactory.Create(IProcessInspector)` utilise l'inspecteur fourni tel quel, sans y ajouter de cache.
 * **Typage fort & Clé d'unicité logique** :
   * Modélisation immuable (`ActiveSocketConnection`, `SocketEndpoint`, `SocketTransportProtocol`, `SocketFlowDirection`).
   * Clé de dédoublonnage canonique préservant l'identité applicative des flux sortants indépendamment des ports locaux éphémères.

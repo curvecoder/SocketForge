@@ -26,6 +26,9 @@ SocketForge is a cross-platform .NET system engineering library dedicated to **o
   * Heuristic fallback rules based on dynamic/ephemeral port allocations (Linux `>= 32768`, IANA `>= 49152`) and privileged ranges (`< 1024`).
 * **Process Correlation**:
   * Direct correlation of every active socket to its owning process and underlying target executable resolved via **`ProcessForge`**.
+  * Each scan resolves every distinct PID once, whatever the number of sockets the process owns (since 2.1.0, Windows and Linux).
+  * `SocketScannerFactory.Create()` (since 2.1.0) builds the scanner with a ProcessForge `CachingProcessInspector` around a `CrossPlatformProcessInspector`, kept for the scanner's lifetime: a process already seen is not read again on the next scans unless its start time changed. Keep one scanner for as long as you scan.
+  * `SocketScannerFactory.Create(IProcessInspector)` uses the given inspector as is, without adding a cache.
 * **Strong Typing & Canonical Deduplication Keys**:
   * Immutable data models (`ActiveSocketConnection`, `SocketEndpoint`, `SocketTransportProtocol`, `SocketFlowDirection`).
   * Canonical deduplication keys preserving logical application flows independently of client ephemeral port variations.
