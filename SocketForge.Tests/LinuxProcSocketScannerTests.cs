@@ -190,6 +190,26 @@ public sealed class LinuxProcSocketScannerTests : IDisposable
     }
 
     [Fact]
+    public async Task ScanSocketsAsync_WhenProcessOwnsSeveralSockets_ResolvesEachProcessOnce()
+    {
+        // Arrange: no fd directory maps these inodes, so every row belongs to pid 0
+        WriteTable(
+            "tcp",
+            Line("0100007F:1F90", "00000000:0000", "0A", 8001),
+            Line("0100007F:1F91", "00000000:0000", "0A", 8002));
+        WriteTable("udp", Line("00000000:0035", "00000000:0000", "07", 8003));
+        var inspector = new RecordingProcessInspector();
+        var scanner = new LinuxProcSocketScanner(inspector, _procRoot);
+
+        // Act
+        var connections = await scanner.ScanSocketsAsync(CancellationToken.None);
+
+        // Assert
+        connections.Should().HaveCount(3);
+        inspector.RequestedProcessIds.Should().Equal(0);
+    }
+
+    [Fact]
     public async Task ScanSocketsAsync_WhenTimeWaitSocketHasNoInode_SkipsIt()
     {
         // Arrange

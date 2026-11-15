@@ -43,6 +43,7 @@ public sealed class WindowsSocketScanner(IProcessInspector processInspector) : I
     public async Task<IReadOnlyList<ActiveSocketConnection>> ScanSocketsAsync(CancellationToken cancellationToken = default)
     {
         var records = new List<ActiveSocketConnection>();
+        var processResolver = new ScanProcessResolver(_processInspector);
 
         // IP Helper keeps one table per address family; the two reads are separate snapshots, so a socket opened between
         // them may be missing from this cycle and is picked up by the next one.
@@ -59,7 +60,7 @@ public sealed class WindowsSocketScanner(IProcessInspector processInspector) : I
         foreach (var row in tcpRows)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var process = await _processInspector.ResolveProcessAsync(row.OwningPid, cancellationToken).ConfigureAwait(false);
+            var process = await processResolver.ResolveAsync(row.OwningPid, cancellationToken).ConfigureAwait(false);
 
             records.Add(new ActiveSocketConnection(
                 Protocol: SocketTransportProtocol.Tcp,
@@ -73,7 +74,7 @@ public sealed class WindowsSocketScanner(IProcessInspector processInspector) : I
         foreach (var row in ReadUdpRows(AfInet).Concat(ReadUdpRows(AfInet6)))
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var process = await _processInspector.ResolveProcessAsync(row.OwningPid, cancellationToken).ConfigureAwait(false);
+            var process = await processResolver.ResolveAsync(row.OwningPid, cancellationToken).ConfigureAwait(false);
 
             records.Add(new ActiveSocketConnection(
                 Protocol: SocketTransportProtocol.Udp,

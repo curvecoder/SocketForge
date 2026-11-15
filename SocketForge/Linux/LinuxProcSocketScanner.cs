@@ -30,6 +30,7 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
     {
         var records = new List<ActiveSocketConnection>();
         var inodeToPid = BuildInodeToPidMap();
+        var processResolver = new ScanProcessResolver(_processInspector);
 
         var tcpPath = Path.Combine(_procRoot, "net", "tcp");
         var tcpLines = File.Exists(tcpPath)
@@ -57,22 +58,22 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
 
         if (tcpLines.Length > 0)
         {
-            await ParseProcNetLinesAsync(tcpLines, SocketTransportProtocol.Tcp, inodeToPid, tcpListeningPorts, records, cancellationToken).ConfigureAwait(false);
+            await ParseProcNetLinesAsync(tcpLines, SocketTransportProtocol.Tcp, inodeToPid, processResolver, tcpListeningPorts, records, cancellationToken).ConfigureAwait(false);
         }
 
         if (tcp6Lines.Length > 0)
         {
-            await ParseProcNetLinesAsync(tcp6Lines, SocketTransportProtocol.Tcp, inodeToPid, tcpListeningPorts, records, cancellationToken).ConfigureAwait(false);
+            await ParseProcNetLinesAsync(tcp6Lines, SocketTransportProtocol.Tcp, inodeToPid, processResolver, tcpListeningPorts, records, cancellationToken).ConfigureAwait(false);
         }
 
         if (udpLines.Length > 0)
         {
-            await ParseProcNetLinesAsync(udpLines, SocketTransportProtocol.Udp, inodeToPid, udpListeningPorts, records, cancellationToken).ConfigureAwait(false);
+            await ParseProcNetLinesAsync(udpLines, SocketTransportProtocol.Udp, inodeToPid, processResolver, udpListeningPorts, records, cancellationToken).ConfigureAwait(false);
         }
 
         if (udp6Lines.Length > 0)
         {
-            await ParseProcNetLinesAsync(udp6Lines, SocketTransportProtocol.Udp, inodeToPid, udpListeningPorts, records, cancellationToken).ConfigureAwait(false);
+            await ParseProcNetLinesAsync(udp6Lines, SocketTransportProtocol.Udp, inodeToPid, processResolver, udpListeningPorts, records, cancellationToken).ConfigureAwait(false);
         }
 
         return records;
@@ -111,10 +112,11 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
         return listeningPorts;
     }
 
-    private async Task ParseProcNetLinesAsync(
+    private static async Task ParseProcNetLinesAsync(
         string[] lines,
         SocketTransportProtocol protocol,
         Dictionary<string, int> inodeToPid,
+        ScanProcessResolver processResolver,
         IReadOnlySet<int> listeningPorts,
         List<ActiveSocketConnection> records,
         CancellationToken cancellationToken)
@@ -147,7 +149,7 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
             }
 
             _ = inodeToPid.TryGetValue(inode, out var pid);
-            var process = await _processInspector.ResolveProcessAsync(pid, cancellationToken).ConfigureAwait(false);
+            var process = await processResolver.ResolveAsync(pid, cancellationToken).ConfigureAwait(false);
 
             var isListening = string.Equals(stateHex, TcpListenState, StringComparison.OrdinalIgnoreCase) ||
                               remoteEp.Port == 0 ||

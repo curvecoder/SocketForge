@@ -35,6 +35,30 @@ public sealed class WindowsSocketScannerTests
             c.LocalEndpoint == new SocketEndpoint(IPAddress.IPv6Loopback, port));
     }
 
+    [Fact]
+    public async Task ScanSocketsAsync_WhenProcessOwnsSeveralSockets_ResolvesEachProcessOnce()
+    {
+        // Arrange: two listeners owned by the test process guarantee a PID that appears on several rows
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var first = new TcpListener(IPAddress.Loopback, 0);
+        using var second = new TcpListener(IPAddress.Loopback, 0);
+        first.Start();
+        second.Start();
+        var inspector = new RecordingProcessInspector();
+        var scanner = new WindowsSocketScanner(inspector);
+
+        // Act
+        var connections = await scanner.ScanSocketsAsync(CancellationToken.None);
+
+        // Assert
+        connections.Count(c => c.Process.ProcessId == Environment.ProcessId).Should().BeGreaterThanOrEqualTo(2);
+        inspector.RequestedProcessIds.Should().OnlyHaveUniqueItems();
+    }
+
     [Theory]
     [InlineData(11u, 0, true)]
     [InlineData(11u, 4321, false)]
