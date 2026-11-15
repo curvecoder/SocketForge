@@ -21,6 +21,8 @@ public sealed class WindowsSocketScanner(IProcessInspector processInspector) : I
     private const int TcpTableOwnerPidAll = 5;
     private const int UdpTableOwnerPid = 1;
 
+    internal IProcessInspector ProcessInspector => _processInspector;
+
     [DllImport("iphlpapi.dll", SetLastError = true)]
     private static extern uint GetExtendedTcpTable(
         IntPtr pTcpTable,

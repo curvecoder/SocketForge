@@ -25,6 +25,8 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
     // The kernel reports an unconnected UDP socket, the only kind that receives from any peer, in state 07.
     private const string UdpUnconnectedState = "07";
 
+    internal IProcessInspector ProcessInspector => _processInspector;
+
     /// <inheritdoc />
     public async Task<IReadOnlyList<ActiveSocketConnection>> ScanSocketsAsync(CancellationToken cancellationToken = default)
     {
