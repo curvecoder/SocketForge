@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net;
 using ProcessForge.Contracts;
+using ProcessForge.Models;
 using SocketForge.Contracts;
 using SocketForge.Models;
 using SocketForge.Resolution;
@@ -10,10 +11,15 @@ namespace SocketForge.Linux;
 /// <summary>
 /// Linux socket scanner that parses /proc/net.
 /// </summary>
-public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, string procRoot = "/proc") : ISocketScanner
+/// <remarks>
+/// The scanner keeps, between scans, which process holds each socket inode. A kept owner is used only after its
+/// descriptor was read again and still points to that socket, so keep one instance for as long as you scan.
+/// </remarks>
+public sealed class LinuxProcSocketScanner : ISocketScanner
 {
-    private readonly IProcessInspector _processInspector = processInspector ?? throw new ArgumentNullException(nameof(processInspector));
-    private readonly string _procRoot = string.IsNullOrWhiteSpace(procRoot) ? "/proc" : procRoot;
+    private readonly IProcessInspector _processInspector;
+    private readonly string _procRoot;
+    private readonly SocketOwnerTable _ownerTable;
 
     // TCP_LISTEN. A TCP socket in TCP_CLOSE (07) is not accepting connections and must not mark its port as a service.
     private const string TcpListenState = "0A";
@@ -25,60 +31,66 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
     // The kernel reports an unconnected UDP socket, the only kind that receives from any peer, in state 07.
     private const string UdpUnconnectedState = "07";
 
+    /// <summary>
+    /// Creates a scanner that reads the given /proc tree.
+    /// </summary>
+    /// <param name="processInspector">The inspector that resolves the process owning each socket.</param>
+    /// <param name="procRoot">The root of the /proc tree; <c>/proc</c> when empty.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="processInspector"/> is <see langword="null"/>.</exception>
+    public LinuxProcSocketScanner(IProcessInspector processInspector, string procRoot = "/proc")
+        : this(processInspector, procRoot, descriptorReader: null)
+    {
+    }
+
+    internal LinuxProcSocketScanner(IProcessInspector processInspector, string procRoot, IProcDescriptorReader? descriptorReader)
+    {
+        _processInspector = processInspector ?? throw new ArgumentNullException(nameof(processInspector));
+        _procRoot = string.IsNullOrWhiteSpace(procRoot) ? "/proc" : procRoot;
+        _ownerTable = new SocketOwnerTable(descriptorReader ?? new ProcFsDescriptorReader(_procRoot));
+    }
+
     internal IProcessInspector ProcessInspector => _processInspector;
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<ActiveSocketConnection>> ScanSocketsAsync(CancellationToken cancellationToken = default)
     {
-        var records = new List<ActiveSocketConnection>();
-        var inodeToPid = BuildInodeToPidMap();
-        var processResolver = new ScanProcessResolver(_processInspector);
-
-        var tcpPath = Path.Combine(_procRoot, "net", "tcp");
-        var tcpLines = File.Exists(tcpPath)
-            ? await File.ReadAllLinesAsync(tcpPath, cancellationToken).ConfigureAwait(false)
-            : [];
-
-        var tcp6Path = Path.Combine(_procRoot, "net", "tcp6");
-        var tcp6Lines = File.Exists(tcp6Path)
-            ? await File.ReadAllLinesAsync(tcp6Path, cancellationToken).ConfigureAwait(false)
-            : [];
-
-        var udpPath = Path.Combine(_procRoot, "net", "udp");
-        var udpLines = File.Exists(udpPath)
-            ? await File.ReadAllLinesAsync(udpPath, cancellationToken).ConfigureAwait(false)
-            : [];
-
-        var udp6Path = Path.Combine(_procRoot, "net", "udp6");
-        var udp6Lines = File.Exists(udp6Path)
-            ? await File.ReadAllLinesAsync(udp6Path, cancellationToken).ConfigureAwait(false)
-            : [];
+        var tcpLines = await ReadTableAsync("tcp", cancellationToken).ConfigureAwait(false);
+        var tcp6Lines = await ReadTableAsync("tcp6", cancellationToken).ConfigureAwait(false);
+        var udpLines = await ReadTableAsync("udp", cancellationToken).ConfigureAwait(false);
+        var udp6Lines = await ReadTableAsync("udp6", cancellationToken).ConfigureAwait(false);
 
         // Each protocol has its own port space: a UDP socket bound on a port says nothing about a TCP flow using it.
         var tcpListeningPorts = CollectListeningPorts(TcpListenState, tcpLines, tcp6Lines);
         var udpListeningPorts = CollectListeningPorts(UdpUnconnectedState, udpLines, udp6Lines);
 
-        if (tcpLines.Length > 0)
-        {
-            await ParseProcNetLinesAsync(tcpLines, SocketTransportProtocol.Tcp, inodeToPid, processResolver, tcpListeningPorts, records, cancellationToken).ConfigureAwait(false);
-        }
+        var rows = new List<ProcNetRow>();
+        CollectRows(tcpLines, SocketTransportProtocol.Tcp, tcpListeningPorts, rows, cancellationToken);
+        CollectRows(tcp6Lines, SocketTransportProtocol.Tcp, tcpListeningPorts, rows, cancellationToken);
+        CollectRows(udpLines, SocketTransportProtocol.Udp, udpListeningPorts, rows, cancellationToken);
+        CollectRows(udp6Lines, SocketTransportProtocol.Udp, udpListeningPorts, rows, cancellationToken);
 
-        if (tcp6Lines.Length > 0)
-        {
-            await ParseProcNetLinesAsync(tcp6Lines, SocketTransportProtocol.Tcp, inodeToPid, processResolver, tcpListeningPorts, records, cancellationToken).ConfigureAwait(false);
-        }
+        // The tables are read before the owners are searched, so that every inode looked for existed when it was listed.
+        var inodes = rows.Select(row => row.Inode).Where(inode => !string.Equals(inode, NoInode, StringComparison.Ordinal)).ToHashSet(StringComparer.Ordinal);
+        var owners = _ownerTable.ResolveOwners(inodes, cancellationToken);
 
-        if (udpLines.Length > 0)
+        var processResolver = new ScanProcessResolver(_processInspector);
+        var records = new List<ActiveSocketConnection>(rows.Count);
+        foreach (var row in rows)
         {
-            await ParseProcNetLinesAsync(udpLines, SocketTransportProtocol.Udp, inodeToPid, processResolver, udpListeningPorts, records, cancellationToken).ConfigureAwait(false);
-        }
-
-        if (udp6Lines.Length > 0)
-        {
-            await ParseProcNetLinesAsync(udp6Lines, SocketTransportProtocol.Udp, inodeToPid, processResolver, udpListeningPorts, records, cancellationToken).ConfigureAwait(false);
+            var processId = owners.GetValueOrDefault(row.Inode);
+            var process = await processResolver.ResolveAsync(processId, cancellationToken).ConfigureAwait(false);
+            records.Add(row.ToConnection(process));
         }
 
         return records;
+    }
+
+    private async Task<string[]> ReadTableAsync(string name, CancellationToken cancellationToken)
+    {
+        var path = Path.Combine(_procRoot, "net", name);
+        return File.Exists(path)
+            ? await File.ReadAllLinesAsync(path, cancellationToken).ConfigureAwait(false)
+            : [];
     }
 
     private static HashSet<int> CollectListeningPorts(string listenState, params string[][] lineSets)
@@ -114,13 +126,11 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
         return listeningPorts;
     }
 
-    private static async Task ParseProcNetLinesAsync(
+    private static void CollectRows(
         string[] lines,
         SocketTransportProtocol protocol,
-        Dictionary<string, int> inodeToPid,
-        ScanProcessResolver processResolver,
         IReadOnlySet<int> listeningPorts,
-        List<ActiveSocketConnection> records,
+        List<ProcNetRow> rows,
         CancellationToken cancellationToken)
     {
         for (var i = 1; i < lines.Length; i++)
@@ -150,23 +160,13 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
                 continue;
             }
 
-            _ = inodeToPid.TryGetValue(inode, out var pid);
-            var process = await processResolver.ResolveAsync(pid, cancellationToken).ConfigureAwait(false);
-
             var isListening = string.Equals(stateHex, TcpListenState, StringComparison.OrdinalIgnoreCase) ||
                               remoteEp.Port == 0 ||
                               remoteEp.Address.Equals(IPAddress.Any) ||
                               remoteEp.Address.Equals(IPAddress.IPv6Any);
 
             var direction = SocketFlowDirectionResolver.Resolve(localEp, remoteEp, isListening, listeningPorts);
-
-            records.Add(new ActiveSocketConnection(
-                Protocol: protocol,
-                Direction: direction,
-                LocalEndpoint: localEp,
-                RemoteEndpoint: remoteEp,
-                State: MapLinuxState(stateHex),
-                Process: process));
+            rows.Add(new ProcNetRow(protocol, direction, localEp, remoteEp, MapLinuxState(stateHex), inode));
         }
     }
 
@@ -258,66 +258,15 @@ public sealed class LinuxProcSocketScanner(IProcessInspector processInspector, s
         };
     }
 
-    private Dictionary<string, int> BuildInodeToPidMap()
+    private readonly record struct ProcNetRow(
+        SocketTransportProtocol Protocol,
+        SocketFlowDirection Direction,
+        SocketEndpoint LocalEndpoint,
+        SocketEndpoint RemoteEndpoint,
+        string State,
+        string Inode)
     {
-        var map = new Dictionary<string, int>(StringComparer.Ordinal);
-        if (!Directory.Exists(_procRoot))
-        {
-            return map;
-        }
-
-        try
-        {
-            var procDirs = Directory.GetDirectories(_procRoot);
-            foreach (var dir in procDirs)
-            {
-                var dirName = Path.GetFileName(dir);
-                if (!int.TryParse(dirName, NumberStyles.Integer, CultureInfo.InvariantCulture, out var pid))
-                {
-                    continue;
-                }
-
-                var fdDir = Path.Combine(dir, "fd");
-                if (!Directory.Exists(fdDir))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    var links = Directory.GetFiles(fdDir);
-                    foreach (var link in links)
-                    {
-                        var linkTarget = new FileInfo(link).LinkTarget ?? File.ResolveLinkTarget(link, returnFinalTarget: false)?.FullName;
-                        if (linkTarget is not null && linkTarget.Contains("socket:[", StringComparison.Ordinal))
-                        {
-                            var startIdx = linkTarget.IndexOf("socket:[", StringComparison.Ordinal) + "socket:[".Length;
-                            var endIdx = linkTarget.IndexOf(']', startIdx);
-                            if (endIdx > startIdx)
-                            {
-                                var inode = linkTarget[startIdx..endIdx];
-                                map[inode] = pid;
-                            }
-                        }
-                    }
-                }
-                catch (IOException)
-                {
-                    // The process exited while its fd directory was listed. Its sockets not mapped yet keep pid 0; the
-                    // other processes are still mapped.
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    // Without root, the fd directories of other users' processes cannot be read. Their sockets are
-                    // still reported, with pid 0.
-                }
-            }
-        }
-        catch (IOException)
-        {
-            // /proc cannot be listed: the map stays empty and every socket is reported with pid 0.
-        }
-
-        return map;
+        public ActiveSocketConnection ToConnection(ProcessMetadata process) =>
+            new(Protocol, Direction, LocalEndpoint, RemoteEndpoint, State, process);
     }
 }

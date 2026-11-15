@@ -249,6 +249,27 @@ public sealed class LinuxProcSocketScannerTests : IDisposable
         connections.Should().HaveCount(expectedCount);
     }
 
+    [Fact]
+    public async Task ScanSocketsAsync_WhenScannedTwice_KeepsOwnersWithoutReadingDescriptorDirectoriesAgain()
+    {
+        // Arrange
+        WriteTable(
+            "tcp",
+            Line("0100007F:1F90", "00000000:0000", "0A", 8101),
+            Line("0100007F:C350", "0100007F:1F90", "01", 8102));
+        var proc = new FakeProcDescriptors().Hold(100, "3", "8101").Hold(200, "5", "8102");
+        var scanner = new LinuxProcSocketScanner(new StubProcessInspector(), _procRoot, proc);
+        await scanner.ScanSocketsAsync(CancellationToken.None);
+        proc.ForgetReads();
+
+        // Act
+        var connections = await scanner.ScanSocketsAsync(CancellationToken.None);
+
+        // Assert
+        connections.Select(connection => connection.Process.ProcessId).Should().Equal(100, 200);
+        proc.ReadProcessIds.Should().BeEmpty();
+    }
+
     private static string Line(string local, string remote, string state, int inode) =>
         $"   0: {local} {remote} {state}" + string.Format(CultureInfo.InvariantCulture, LineTail, inode);
 
