@@ -29,7 +29,7 @@ Cross-platform active TCP and UDP socket scanner for .NET, inspecting listening 
 Add the package via the .NET CLI:
 
 ```powershell
-dotnet add package SocketForge --version 2.1.0
+dotnet add package SocketForge --version 2.1.1
 ```
 
 ---
@@ -39,7 +39,8 @@ dotnet add package SocketForge --version 2.1.0
 ```csharp
 using SocketForge.Factories;
 
-// Keep one scanner for as long as you scan: it caches the processes it has already resolved.
+// Keep one scanner for as long as you scan: it caches the processes it has already resolved and, on Linux,
+// which process holds each socket.
 var scanner = SocketScannerFactory.Create();
 var sockets = await scanner.ScanSocketsAsync();
 
